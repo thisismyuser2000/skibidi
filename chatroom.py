@@ -34,12 +34,12 @@ class DataPersistence:
         """Hash password with salt"""
         salt = "chatroom_salt_2024"  # In production, use random salt per user
         return hashlib.sha256((password + salt).encode()).hexdigest()
-    
+
     @staticmethod
     def generate_session_id():
         """Generate secure session ID"""
         return base64.urlsafe_b64encode(os.urandom(32)).decode().rstrip('=')
-    
+
     @staticmethod
     def backup_to_github_gist():
         """Backup data to GitHub Gist (primary method)"""
@@ -96,7 +96,7 @@ class DataPersistence:
         except Exception as e:
             print(f"❌ GitHub Gist backup error: {e}")
             return False
-    
+
     @staticmethod
     def restore_from_github_gist():
         """Restore data from GitHub Gist"""
@@ -148,7 +148,7 @@ class DataPersistence:
         except Exception as e:
             print(f"❌ GitHub Gist restore error: {e}")
             return False
-    
+
     @staticmethod
     def backup_to_webhook():
         """Secondary backup to external webhook"""
@@ -203,7 +203,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
         mimetypes.add_type('text/css', '.css')
         mimetypes.add_type('application/json', '.json')
         super().__init__(*args, **kwargs)
-    
+
     def do_GET(self):
         parsed_path = urllib.parse.urlparse(self.path)
         path = parsed_path.path
@@ -222,7 +222,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             return
         
         self.send_error(404, "File not found")
-    
+
     def serve_login_page(self):
         """Serve the login/register page"""
         html_content = """
@@ -238,7 +238,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             padding: 0;
             box-sizing: border-box;
         }
-        
+
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -424,7 +424,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
     <div class="login-container">
         <div class="logo">🎤💬</div>
         <h1>Chatroom + Voice Room</h1>
-        
+
         <div class="error-message" id="errorMessage"></div>
         <div class="success-message" id="successMessage"></div>
         
@@ -488,6 +488,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             <p>• Your data is backed up automatically</p>
             <p>• Accounts persist across server restarts</p>
             <p>• Voice + text chat with friends</p>
+            <p>• 📸 Image sharing support</p>
             <p>• Mobile-friendly interface</p>
         </div>
     </div>
@@ -695,13 +696,13 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
 </body>
 </html>
         """
-        
+
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(html_content.encode('utf-8'))
-    
+
     def serve_chatroom(self):
         """Serve the chatroom - but check authentication first"""
         # Check if user is authenticated
@@ -731,7 +732,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             padding: 0;
             box-sizing: border-box;
         }}
-        
+
         body {{
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -881,6 +882,11 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             border-left-color: #ff9800;
         }}
         
+        .message.image {{
+            background: #f3e5f5;
+            border-left-color: #9c27b0;
+        }}
+        
         .message-header {{
             display: flex;
             justify-content: space-between;
@@ -905,13 +911,35 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             word-wrap: break-word;
         }}
         
+        .message-image {{
+            max-width: 100%;
+            max-height: 300px;
+            border-radius: 8px;
+            margin-top: 8px;
+            cursor: pointer;
+            transition: transform 0.2s ease;
+        }}
+        
+        .message-image:hover {{
+            transform: scale(1.02);
+        }}
+        
         .input-container {{
             background: rgba(255, 255, 255, 0.95);
             padding: 20px;
             border-radius: 0 0 15px 15px;
             display: flex;
             gap: 10px;
-            align-items: center;
+            align-items: flex-end;
+            flex-wrap: wrap;
+        }}
+        
+        .input-row {{
+            display: flex;
+            flex: 1;
+            gap: 10px;
+            align-items: flex-end;
+            min-width: 300px;
         }}
         
         #messageInput {{
@@ -921,6 +949,40 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             border-radius: 8px;
             font-size: 14px;
             resize: none;
+            min-height: 40px;
+        }}
+        
+        .image-upload {{
+            position: relative;
+            display: inline-block;
+        }}
+        
+        .image-upload input[type="file"] {{
+            position: absolute;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }}
+        
+        .image-upload-btn {{
+            background: #ff9800;
+            color: white;
+            border: none;
+            padding: 12px 15px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }}
+        
+        .image-upload-btn:hover {{
+            background: #f57c00;
+            transform: translateY(-1px);
         }}
         
         #sendButton {{
@@ -938,6 +1000,38 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
         #sendButton:hover {{
             background: #5a6fd8;
             transform: translateY(-1px);
+        }}
+        
+        .image-preview {{
+            width: 100%;
+            max-width: 200px;
+            max-height: 150px;
+            border-radius: 8px;
+            margin-top: 10px;
+            border: 2px solid #ddd;
+        }}
+        
+        .image-preview-container {{
+            position: relative;
+            display: inline-block;
+            margin-top: 10px;
+        }}
+        
+        .remove-image {{
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            background: #f44336;
+            color: white;
+            border: none;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }}
         
         .no-messages {{
@@ -970,6 +1064,43 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
         
         .emoji-btn:hover {{
             background: rgba(0,0,0,0.1);
+        }}
+        
+        /* Image modal styles */
+        .image-modal {{
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.9);
+            animation: fadeIn 0.3s ease;
+        }}
+        
+        .image-modal img {{
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            max-width: 90%;
+            max-height: 90%;
+            border-radius: 8px;
+        }}
+        
+        .image-modal .close {{
+            position: absolute;
+            top: 20px;
+            right: 35px;
+            color: white;
+            font-size: 40px;
+            font-weight: bold;
+            cursor: pointer;
+        }}
+        
+        .image-modal .close:hover {{
+            color: #ccc;
         }}
         
         /* Voice Room Styles */
@@ -1105,6 +1236,11 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                 gap: 10px;
             }}
             
+            .input-row {{
+                min-width: auto;
+                width: 100%;
+            }}
+            
             .voice-controls {{
                 flex-direction: column;
             }}
@@ -1135,20 +1271,32 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
         </div>
         <div class="online-count" id="onlineCount">🟢 Loading...</div>
     </div>
-    
+
     <div class="main-container">
         <!-- Text Chat Tab -->
         <div id="chatTab" class="tab-content active">
             <div class="messages-container" id="messagesContainer">
-                <div class="no-messages">Welcome to the chatroom! Send a message to get started 🚀</div>
+                <div class="no-messages">Welcome to the chatroom! Send a message or share an image to get started 🚀</div>
             </div>
             
             <div class="input-container">
-                <textarea id="messageInput" placeholder="Type your message..." rows="1" maxlength="500"></textarea>
-                <button class="emoji-btn" onclick="addEmoji('😊')">😊</button>
-                <button class="emoji-btn" onclick="addEmoji('👍')">👍</button>
-                <button class="emoji-btn" onclick="addEmoji('❤️')">❤️</button>
-                <button id="sendButton" onclick="sendMessage()">Send 📤</button>
+                <div class="input-row">
+                    <textarea id="messageInput" placeholder="Type your message..." rows="1" maxlength="500"></textarea>
+                    <button class="emoji-btn" onclick="addEmoji('😊')">😊</button>
+                    <button class="emoji-btn" onclick="addEmoji('👍')">👍</button>
+                    <button class="emoji-btn" onclick="addEmoji('❤️')">❤️</button>
+                </div>
+                <div class="input-row">
+                    <div class="image-upload">
+                        <input type="file" id="imageInput" accept="image/*" onchange="handleImageSelect(event)">
+                        <button class="image-upload-btn">📸 Add Image</button>
+                    </div>
+                    <button id="sendButton" onclick="sendMessage()">Send 📤</button>
+                </div>
+                <div id="imagePreviewContainer" class="image-preview-container" style="display: none;">
+                    <img id="imagePreview" class="image-preview" alt="Preview">
+                    <button class="remove-image" onclick="removeImagePreview()">✕</button>
+                </div>
             </div>
         </div>
         
@@ -1191,9 +1339,16 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
         </div>
     </div>
 
+    <!-- Image Modal -->
+    <div id="imageModal" class="image-modal" onclick="closeImageModal()">
+        <span class="close" onclick="closeImageModal()">&times;</span>
+        <img id="modalImage" alt="Full size image">
+    </div>
+
     <script>
         let currentUser = '{username}';
         let lastMessageId = 0;
+        let selectedImageData = null;
         
         // Voice variables
         let socket = null;
@@ -1226,6 +1381,55 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             
             document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
             document.getElementById(tabName + 'Tab').classList.add('active');
+        }}
+        
+        // Image handling functions
+        function handleImageSelect(event) {{
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            // Check file size (limit to 2MB)
+            if (file.size > 2 * 1024 * 1024) {{
+                alert('Image too large! Please select an image smaller than 2MB.');
+                event.target.value = '';
+                return;
+            }}
+            
+            // Check file type
+            if (!file.type.startsWith('image/')) {{
+                alert('Please select an image file.');
+                event.target.value = '';
+                return;
+            }}
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {{
+                selectedImageData = e.target.result;
+                
+                // Show preview
+                const preview = document.getElementById('imagePreview');
+                const container = document.getElementById('imagePreviewContainer');
+                preview.src = selectedImageData;
+                container.style.display = 'block';
+            }};
+            reader.readAsDataURL(file);
+        }}
+        
+        function removeImagePreview() {{
+            selectedImageData = null;
+            document.getElementById('imageInput').value = '';
+            document.getElementById('imagePreviewContainer').style.display = 'none';
+        }}
+        
+        function openImageModal(imageSrc) {{
+            const modal = document.getElementById('imageModal');
+            const modalImg = document.getElementById('modalImage');
+            modal.style.display = 'block';
+            modalImg.src = imageSrc;
+        }}
+        
+        function closeImageModal() {{
+            document.getElementById('imageModal').style.display = 'none';
         }}
         
         // Initialize Socket.IO connection
@@ -1303,12 +1507,20 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
         
         function sendMessage() {{
             const messageText = messageInput.value.trim();
-            if (!messageText) return;
+            const hasImage = selectedImageData !== null;
+            
+            if (!messageText && !hasImage) return;
             
             const message = {{
                 text: messageText,
                 timestamp: new Date().toISOString()
             }};
+            
+            // Add image data if present
+            if (hasImage) {{
+                message.image = selectedImageData;
+                message.image_type = 'base64';
+            }}
             
             fetch('/api/chat/send', {{
                 method: 'POST',
@@ -1322,16 +1534,20 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                 if (data.success) {{
                     messageInput.value = '';
                     messageInput.style.height = 'auto';
+                    removeImagePreview();
                     if (data.messageId) {{
                         lastMessageId = data.messageId;
                     }}
                 }} else if (data.error === 'Not authenticated') {{
                     alert('Session expired. Please login again.');
                     window.location.href = '/';
+                }} else {{
+                    alert(data.error || 'Error sending message');
                 }}
             }})
             .catch(error => {{
                 console.error('Error sending message:', error);
+                alert('Network error. Please try again.');
             }});
         }}
         
@@ -1371,21 +1587,30 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                 const messageDiv = document.createElement('div');
                 let messageClass = 'message';
                 if (message.username === currentUser) messageClass += ' own';
-                if (message.text.includes('🎤') || message.text.includes('🗣️') || message.text.includes('📞')) messageClass += ' voice';
+                if (message.text && (message.text.includes('🎤') || message.text.includes('🗣️') || message.text.includes('📞'))) messageClass += ' voice';
+                if (message.image) messageClass += ' image';
                 
                 messageDiv.className = messageClass;
                 messageDiv.id = `message-${{message.id}}`;
                 
                 const timestamp = new Date(message.timestamp).toLocaleTimeString();
                 
-                messageDiv.innerHTML = `
+                let messageContent = `
                     <div class="message-header">
                         <span class="username">${{escapeHtml(message.username)}}</span>
                         <span class="timestamp">${{timestamp}}</span>
                     </div>
-                    <div class="message-text">${{escapeHtml(message.text)}}</div>
                 `;
                 
+                if (message.text) {{
+                    messageContent += `<div class="message-text">${{escapeHtml(message.text)}}</div>`;
+                }}
+                
+                if (message.image) {{
+                    messageContent += `<img class="message-image" src="${{message.image}}" alt="Shared image" onclick="openImageModal('${{message.image}}')">`;
+                }}
+                
+                messageDiv.innerHTML = messageContent;
                 container.appendChild(messageDiv);
             }});
             
@@ -1703,19 +1928,20 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             console.log('🎉 Authenticated Chatroom + Voice Room loaded!');
             console.log('👤 Logged in as:', currentUser);
             console.log('💬 Text chat ready');
+            console.log('📸 Image sharing ready');
             console.log('🎤 Voice room connected');
         }});
     </script>
 </body>
 </html>
         """
-        
+
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(html_content.encode('utf-8'))
-    
+
     def get_session_from_cookies(self):
         """Extract session ID from cookies"""
         cookie_header = self.headers.get('Cookie', '')
@@ -1724,7 +1950,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             if part.startswith('session_id='):
                 return part.split('=', 1)[1]
         return None
-    
+
     def is_valid_session(self, session_id):
         """Check if session is valid and not expired"""
         with users_lock:
@@ -1738,13 +1964,13 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                 return False
             
             return True
-    
+
     def get_username_from_session(self, session_id):
         """Get username from valid session"""
         with users_lock:
             session = user_sessions.get(session_id)
             return session['username'] if session else None
-    
+
     def handle_api(self, path):
         """Handle API endpoints"""
         if path == '/api/auth/register':
@@ -1763,7 +1989,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_status()
         else:
             self.send_error(404, "API endpoint not found")
-    
+
     def handle_register(self):
         """Handle user registration"""
         try:
@@ -1813,7 +2039,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json_response({"success": False, "error": "Invalid JSON"})
         except Exception as e:
             self.send_json_response({"success": False, "error": f"Registration failed: {str(e)}"})
-    
+
     def handle_login(self):
         """Handle user login"""
         try:
@@ -1862,7 +2088,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json_response({"success": False, "error": "Invalid JSON"})
         except Exception as e:
             self.send_json_response({"success": False, "error": f"Login failed: {str(e)}"})
-    
+
     def handle_logout(self):
         """Handle user logout"""
         session_id = self.get_session_from_cookies()
@@ -1871,7 +2097,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                 user_sessions.pop(session_id, None)
         
         self.send_json_response({"success": True, "message": "Logged out successfully"})
-    
+
     def handle_auth_check(self):
         """Check if user is authenticated"""
         session_id = self.get_session_from_cookies()
@@ -1883,7 +2109,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             })
         else:
             self.send_json_response({"authenticated": False})
-    
+
     def handle_chat_send(self):
         """Handle sending a new chat message (authenticated users only)"""
         # Check authentication
@@ -1903,10 +2129,32 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             message_data = json.loads(post_data.decode('utf-8'))
             
             text = message_data.get('text', '')[:500]  # Limit message length
+            image_data = message_data.get('image')
             
-            if not text.strip():
+            if not text.strip() and not image_data:
                 self.send_json_response({"success": False, "error": "Empty message"})
                 return
+            
+            # Validate image data if present
+            if image_data:
+                try:
+                    # Check if it's a valid base64 image
+                    if not image_data.startswith('data:image/'):
+                        self.send_json_response({"success": False, "error": "Invalid image format"})
+                        return
+                    
+                    # Extract base64 data and check size
+                    header, data = image_data.split(',', 1)
+                    decoded = base64.b64decode(data)
+                    
+                    # Limit image size to 1MB when stored
+                    if len(decoded) > 1024 * 1024:
+                        self.send_json_response({"success": False, "error": "Image too large"})
+                        return
+                        
+                except Exception:
+                    self.send_json_response({"success": False, "error": "Invalid image data"})
+                    return
             
             # Add message to global storage
             with chatroom_lock:
@@ -1915,10 +2163,16 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                 message = {
                     'id': new_id,
                     'username': username,
-                    'text': text.strip(),
+                    'text': text.strip() if text.strip() else None,
                     'timestamp': datetime.now().isoformat(),
                     'ip': self.client_address[0]
                 }
+                
+                # Add image data if present
+                if image_data:
+                    message['image'] = image_data
+                    message['image_type'] = 'base64'
+                
                 chatroom_messages.append(message)
                 
                 # Keep only last 100 messages
@@ -1933,7 +2187,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json_response({"success": False, "error": "Invalid JSON"})
         except Exception as e:
             self.send_json_response({"success": False, "error": str(e)})
-    
+
     def handle_chat_messages(self, path):
         """Handle retrieving chat messages (authenticated users only)"""
         # Check authentication
@@ -1956,20 +2210,24 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             }
         
         self.send_json_response(response_data)
-    
+
     def handle_status(self):
         """Handle server status"""
         with chatroom_lock, users_lock:
             message_count = len(chatroom_messages)
             user_count = len(users_db)
             active_sessions = len([s for s in user_sessions.values() if datetime.now() < s['expires']])
+            
+            # Count messages with images
+            image_messages = len([msg for msg in chatroom_messages if msg.get('image')])
         
         data = {
             "status": "online",
-            "server": "Authenticated Chatroom + Voice Room Server",
-            "version": "6.0",
+            "server": "Authenticated Chatroom + Voice Room Server with Images",
+            "version": "7.0",
             "timestamp": time.time(),
             "total_messages": message_count,
+            "image_messages": image_messages,
             "total_users": user_count,
             "active_sessions": active_sessions,
             "signaling_server": "https://repo1-ejq1.onrender.com",
@@ -1978,6 +2236,8 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                 "persistent_storage", 
                 "github_gist_backup",
                 "text_chat", 
+                "image_sharing",
+                "base64_image_storage",
                 "voice_room", 
                 "webrtc_voice", 
                 "push_to_talk", 
@@ -1987,11 +2247,11 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                 "github_gist_configured": bool(GITHUB_GIST_TOKEN and GITHUB_GIST_ID),
                 "webhook_configured": bool(EXTERNAL_BACKUP_URL)
             },
-            "uptime": "Running with authentication & persistent storage! 🔐💬🎤"
+            "uptime": "Running with authentication, images & persistent storage! 🔐💬📸🎤"
         }
         
         self.send_json_response(data)
-    
+
     def send_json_response(self, data):
         """Helper method to send JSON responses"""
         response = json.dumps(data, indent=2)
@@ -2002,7 +2262,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.end_headers()
         self.wfile.write(response.encode('utf-8'))
-    
+
     def serve_static_file(self, path):
         """Try to serve static files from current directory"""
         file_path = path.lstrip('/')
@@ -2028,7 +2288,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                 return False
         
         return False
-    
+
     def do_POST(self):
         """Handle POST requests"""
         parsed_path = urllib.parse.urlparse(self.path)
@@ -2047,7 +2307,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             }
             
             self.send_json_response(response_data)
-    
+
     def do_OPTIONS(self):
         """Handle OPTIONS requests for CORS"""
         self.send_response(200)
@@ -2079,24 +2339,28 @@ def main():
         print("✅ Data restored from GitHub Gist backup")
     else:
         print("⚠️ No backup found or failed to restore - starting fresh")
-    
+
     # Start background tasks
     backup_thread = threading.Thread(target=backup_data_periodically, daemon=True)
     backup_thread.start()
-    
+
     cleanup_thread = threading.Thread(target=cleanup_expired_sessions, daemon=True)
     cleanup_thread.start()
-    
+
     try:
         with socketserver.TCPServer(("0.0.0.0", PORT), ChatroomHandler) as httpd:
             print("🚀" * 60)
-            print(f"🔐💬🎤 AUTHENTICATED CHATROOM + VOICE ROOM SERVER STARTED!")
+            print(f"🔐💬📸🎤 AUTHENTICATED CHATROOM + VOICE + IMAGES SERVER STARTED!")
             print("🚀" * 60)
             print(f"🌐 Server URL: http://localhost:{PORT}")
             print(f"📡 Voice Signaling: https://repo1-ejq1.onrender.com")
             print(f"📂 Directory: {os.getcwd()}")
             print(f"🗄️ Loaded Users: {len(users_db)}")
             print(f"💬 Loaded Messages: {len(chatroom_messages)}")
+            
+            # Count messages with images
+            image_messages = len([msg for msg in chatroom_messages if msg.get('image')])
+            print(f"📸 Messages with Images: {image_messages}")
             
             print("\n🔐 AUTHENTICATION FEATURES:")
             print("   👤 User registration with username + password")
@@ -2111,6 +2375,15 @@ def main():
             print("   📤 Webhook backup (secondary)")
             print("   🔧 Data restoration on server restart")
             print("   🧹 Automatic session cleanup")
+            print("   📸 Base64 image storage in backups")
+            
+            print("\n📸 IMAGE SHARING FEATURES:")
+            print("   🖼️ Upload and share images (JPG, PNG, GIF, WebP)")
+            print("   📏 2MB upload limit per image")
+            print("   💾 Images stored as base64 in GitHub Gist")
+            print("   🔍 Click to view full-size images")
+            print("   📱 Mobile-friendly image handling")
+            print("   🔄 Images persist across server restarts")
             
             print("\n🎯 RENDER.COM SETUP INSTRUCTIONS:")
             print("   1. Set environment variables in Render dashboard:")
@@ -2125,6 +2398,7 @@ def main():
             print("\n✨ FEATURES:")
             print("   🔐 Secure user authentication")
             print("   💬 Real-time text chatroom")
+            print("   📸 Image sharing with persistence")
             print("   🎤 Voice room with WebRTC")
             print("   📱 Mobile-friendly interface")
             print("   😊 Emoji support")
@@ -2141,7 +2415,7 @@ def main():
             print("   🔑 POST /api/auth/login (Login)")
             print("   🚪 POST /api/auth/logout (Logout)")
             print("   ✅ GET /api/auth/check (Check auth)")
-            print("   📤 POST /api/chat/send (Send message)")
+            print("   📤 POST /api/chat/send (Send message/image)")
             print("   📥 GET /api/chat/messages (Get messages)")
             print("   📊 GET /api/status (Server status)")
             
@@ -2157,6 +2431,12 @@ def main():
                 print("   Your data will be lost when Render restarts the service.")
                 print("   Please set GITHUB_GIST_TOKEN and GITHUB_GIST_ID environment variables.")
             
+            print("\n📸 IMAGE STORAGE INFO:")
+            print("   • Images are converted to base64 and stored in GitHub Gist")
+            print("   • 2MB limit per image to stay within Gist size limits")
+            print("   • Images persist across server restarts")
+            print("   • Supported formats: JPG, PNG, GIF, WebP")
+            
             print("\n🛑 Press Ctrl+C to stop the server")
             print("=" * 60)
             
@@ -2165,7 +2445,7 @@ def main():
         print("\n🛑 Server stopped by user")
         print("💾 Performing final backup...")
         data_persistence.backup_to_github_gist()
-        print("👋 Thanks for using the authenticated chatroom!")
+        print("👋 Thanks for using the authenticated chatroom with images!")
     except Exception as e:
         print(f"❌ Server error: {e}")
 
