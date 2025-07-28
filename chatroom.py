@@ -22,15 +22,268 @@ users_db = {}  # username -> {"password_hash": str, "created": datetime, "last_s
 user_sessions = {}  # session_id -> {"username": str, "expires": datetime}
 users_lock = threading.Lock()
 
-# Persistence configuration
+# Pcloud configuration
+PCLOUD_USERNAME = os.environ.get('PCLOUD_USERNAME', '')  # Your pCloud email
+PCLOUD_PASSWORD = os.environ.get('PCLOUD_PASSWORD', '')  # Your pCloud password
+PCLOUD_AUTH_TOKEN = os.environ.get('PCLOUD_AUTH_TOKEN', '')  # Optional: pre-generated token
+PCLOUD_FOLDER_PATH = os.environ.get('PCLOUD_FOLDER_PATH', '/ChatroomImages')  # Folder for images
+
+# Persistence configuration (still using GitHub Gist for chat data, only images go to Pcloud)
 GITHUB_GIST_TOKEN = os.environ.get('GITHUB_GIST_TOKEN', '')  # Set this in Render environment
 GITHUB_GIST_ID = os.environ.get('GITHUB_GIST_ID', '')  # Set this after first run
-GITHUB_IMAGES_GIST_ID = os.environ.get('GITHUB_IMAGES_GIST_ID', '')  # NEW: For image storage
 BACKUP_INTERVAL = 300  # 5 minutes
 EXTERNAL_BACKUP_URL = os.environ.get('BACKUP_WEBHOOK_URL', '')  # Optional webhook backup
 
+class PcloudStorage:
+    """Handles Pcloud storage for images"""
+    
+    def __init__(self):
+        self.auth_token = None
+        self.base_url = "https://api.pcloud.com"
+        self.authenticate()
+    
+    def authenticate(self):
+        """Authenticate with Pcloud and get auth token"""
+        if PCLOUD_AUTH_TOKEN:
+            self.auth_token = PCLOUD_AUTH_TOKEN
+            print("✅ Using provided Pcloud auth token")
+            return True
+        
+        if not PCLOUD_USERNAME or not PCLOUD_PASSWORD:
+            print("❌ Pcloud credentials not configured")
+            return False
+        
+        try:
+            # Get auth token using username/password
+            auth_url = f"{self.base_url}/userinfo"
+            params = {
+                'username': PCLOUD_USERNAME,
+                'password': PCLOUD_PASSWORD,
+                'getauth': '1'
+            }
+            
+            response = requests.get(auth_url, params=params, timeout=10)
+            data = response.json()
+            
+            if data.get('result') == 0:  # Success
+                self.auth_token = data.get('auth')
+                print(f"✅ Pcloud authentication successful")
+                return True
+            else:
+                print(f"❌ Pcloud auth failed: {data.get('error', 'Unknown error')}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Pcloud auth error: {e}")
+            return False
+    
+    def create_folder_if_not_exists(self):
+        """Create the images folder if it doesn't exist"""
+        if not self.auth_token:
+            return False
+        
+        try:
+            # Check if folder exists
+            list_url = f"{self.base_url}/listfolder"
+            params = {
+                'auth': self.auth_token,
+                'path': PCLOUD_FOLDER_PATH
+            }
+            
+            response = requests.get(list_url, params=params, timeout=10)
+            data = response.json()
+            
+            if data.get('result') == 0:  # Folder exists
+                return True
+            
+            # Create folder
+            create_url = f"{self.base_url}/createfolder"
+            params = {
+                'auth': self.auth_token,
+                'path': PCLOUD_FOLDER_PATH
+            }
+            
+            response = requests.get(create_url, params=params, timeout=10)
+            data = response.json()
+            
+            if data.get('result') == 0:
+                print(f"✅ Created Pcloud folder: {PCLOUD_FOLDER_PATH}")
+                return True
+            else:
+                print(f"❌ Failed to create Pcloud folder: {data.get('error')}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Pcloud folder creation error: {e}")
+            return False
+    
+    def upload_image(self, image_id, image_data_base64, filename, username):
+        """Upload image to Pcloud"""
+        if not self.auth_token:
+            print("❌ No Pcloud auth token available")
+            return False
+        
+        try:
+            # Ensure folder exists
+            if not self.create_folder_if_not_exists():
+                return False
+            
+            # Decode base64 image data
+            image_bytes = base64.b64decode(image_data_base64)
+            
+            # Create unique filename with image_id
+            file_extension = filename.split('.')[-1] if '.' in filename else 'jpg'
+            pcloud_filename = f"{image_id}_{username}_{int(time.time())}.{file_extension}"
+            
+            # Upload file to Pcloud
+            upload_url = f"{self.base_url}/uploadfile"
+            
+            files = {
+                'file': (pcloud_filename, image_bytes, f'image/{file_extension}')
+            }
+            
+            data = {
+                'auth': self.auth_token,
+                'path': PCLOUD_FOLDER_PATH,
+                'filename': pcloud_filename,
+                'renameifexists': '1'
+            }
+            
+            response = requests.post(upload_url, files=files, data=data, timeout=30)
+            result = response.json()
+            
+            if result.get('result') == 0:  # Success
+                file_info = result.get('metadata', [{}])[0]
+                file_id = file_info.get('fileid')
+                
+                print(f"✅ Image uploaded to Pcloud: {pcloud_filename} (ID: {file_id})")
+                
+                # Store mapping of image_id to pcloud file info
+                self.store_image_mapping(image_id, {
+                    'pcloud_filename': pcloud_filename,
+                    'file_id': file_id,
+                    'original_filename': filename,
+                    'uploaded_by': username,
+                    'timestamp': datetime.now().isoformat(),
+                    'size': len(image_bytes)
+                })
+                
+                return True
+            else:
+                print(f"❌ Pcloud upload failed: {result.get('error')}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Pcloud upload error: {e}")
+            return False
+    
+    def get_image_download_link(self, image_id):
+        """Get download link for an image"""
+        if not self.auth_token:
+            return None
+        
+        try:
+            # Get image mapping info
+            image_info = self.get_image_mapping(image_id)
+            if not image_info:
+                return None
+            
+            file_id = image_info.get('file_id')
+            if not file_id:
+                return None
+            
+            # Get download link
+            link_url = f"{self.base_url}/getfilelink"
+            params = {
+                'auth': self.auth_token,
+                'fileid': file_id
+            }
+            
+            response = requests.get(link_url, params=params, timeout=10)
+            data = response.json()
+            
+            if data.get('result') == 0:
+                # Return the download URL
+                hosts = data.get('hosts', [])
+                path = data.get('path', '')
+                
+                if hosts and path:
+                    download_url = f"https://{hosts[0]}{path}"
+                    return download_url
+            
+            return None
+            
+        except Exception as e:
+            print(f"❌ Error getting Pcloud download link: {e}")
+            return None
+    
+    def download_image(self, image_id):
+        """Download image data from Pcloud"""
+        if not self.auth_token:
+            return None
+        
+        try:
+            download_url = self.get_image_download_link(image_id)
+            if not download_url:
+                return None
+            
+            # Download the image
+            response = requests.get(download_url, timeout=15)
+            if response.status_code == 200:
+                return response.content
+            
+            return None
+            
+        except Exception as e:
+            print(f"❌ Error downloading from Pcloud: {e}")
+            return None
+    
+    def store_image_mapping(self, image_id, mapping_data):
+        """Store image ID to Pcloud file mapping (in memory for now)"""
+        # In a production app, you'd store this in a database
+        # For now, we'll use a simple file-based approach
+        try:
+            mappings_file = 'pcloud_image_mappings.json'
+            
+            # Load existing mappings
+            if os.path.exists(mappings_file):
+                with open(mappings_file, 'r') as f:
+                    mappings = json.load(f)
+            else:
+                mappings = {}
+            
+            # Add new mapping
+            mappings[image_id] = mapping_data
+            
+            # Save back to file
+            with open(mappings_file, 'w') as f:
+                json.dump(mappings, f, indent=2)
+                
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error storing image mapping: {e}")
+            return False
+    
+    def get_image_mapping(self, image_id):
+        """Get image mapping data"""
+        try:
+            mappings_file = 'pcloud_image_mappings.json'
+            
+            if not os.path.exists(mappings_file):
+                return None
+            
+            with open(mappings_file, 'r') as f:
+                mappings = json.load(f)
+            
+            return mappings.get(image_id)
+            
+        except Exception as e:
+            print(f"❌ Error getting image mapping: {e}")
+            return None
+
 class DataPersistence:
-    """Handles multiple backup strategies for data persistence"""
+    """Handles backup strategies for chat data (excluding images which go to Pcloud)"""
     
     @staticmethod
     def hash_password(password):
@@ -45,7 +298,7 @@ class DataPersistence:
     
     @staticmethod
     def backup_to_github_gist():
-        """Backup data to GitHub Gist (primary method)"""
+        """Backup chat data to GitHub Gist (NOT images - those go to Pcloud)"""
         if not GITHUB_GIST_TOKEN or not GITHUB_GIST_ID:
             return False
         
@@ -65,7 +318,8 @@ class DataPersistence:
                     "stats": {
                         "total_users": len(users_db),
                         "total_messages": len(chatroom_messages)
-                    }
+                    },
+                    "note": "Images are stored in Pcloud, not in this backup"
                 }
             
             # Update GitHub Gist
@@ -90,7 +344,7 @@ class DataPersistence:
             )
             
             if response.status_code == 200:
-                print(f"✅ Data backed up to GitHub Gist at {datetime.now()}")
+                print(f"✅ Chat data backed up to GitHub Gist at {datetime.now()}")
                 return True
             else:
                 print(f"❌ GitHub Gist backup failed: {response.status_code}")
@@ -101,98 +355,8 @@ class DataPersistence:
             return False
     
     @staticmethod
-    def backup_image_to_gist(image_id, image_data_base64, filename, username):
-        """Backup image to separate GitHub Gist"""
-        if not GITHUB_GIST_TOKEN or not GITHUB_IMAGES_GIST_ID:
-            return False
-        
-        try:
-            # First, get current gist content
-            headers = {
-                'Authorization': f'token {GITHUB_GIST_TOKEN}',
-                'Accept': 'application/vnd.github.v3+json'
-            }
-            
-            response = requests.get(
-                f'https://api.github.com/gists/{GITHUB_IMAGES_GIST_ID}',
-                headers=headers,
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                gist_data = response.json()
-                current_images = json.loads(gist_data['files']['images.json']['content'])
-            else:
-                current_images = {"images": {}}
-            
-            # Add new image
-            current_images["images"][image_id] = {
-                "filename": filename,
-                "data": image_data_base64,
-                "uploaded_by": username,
-                "timestamp": datetime.now().isoformat(),
-                "size": len(image_data_base64)
-            }
-            
-            # Update gist
-            data = {
-                "files": {
-                    "images.json": {
-                        "content": json.dumps(current_images, indent=2)
-                    }
-                }
-            }
-            
-            response = requests.patch(
-                f'https://api.github.com/gists/{GITHUB_IMAGES_GIST_ID}',
-                headers=headers,
-                json=data,
-                timeout=15
-            )
-            
-            if response.status_code == 200:
-                print(f"✅ Image backed up to GitHub Gist: {filename}")
-                return True
-            else:
-                print(f"❌ Image backup failed: {response.status_code}")
-                return False
-                
-        except Exception as e:
-            print(f"❌ Image backup error: {e}")
-            return False
-    
-    @staticmethod
-    def get_image_from_gist(image_id):
-        """Retrieve image from GitHub Gist"""
-        if not GITHUB_GIST_TOKEN or not GITHUB_IMAGES_GIST_ID:
-            return None
-        
-        try:
-            headers = {
-                'Authorization': f'token {GITHUB_GIST_TOKEN}',
-                'Accept': 'application/vnd.github.v3+json'
-            }
-            
-            response = requests.get(
-                f'https://api.github.com/gists/{GITHUB_IMAGES_GIST_ID}',
-                headers=headers,
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                gist_data = response.json()
-                images_data = json.loads(gist_data['files']['images.json']['content'])
-                return images_data["images"].get(image_id)
-            else:
-                return None
-                
-        except Exception as e:
-            print(f"❌ Image retrieval error: {e}")
-            return None
-    
-    @staticmethod
     def restore_from_github_gist():
-        """Restore data from GitHub Gist"""
+        """Restore chat data from GitHub Gist"""
         if not GITHUB_GIST_TOKEN or not GITHUB_GIST_ID:
             return False
         
@@ -235,7 +399,7 @@ class DataPersistence:
                 for i, msg in enumerate(chatroom_messages):
                     msg['id'] = i + 1
             
-            print(f"✅ Data restored from GitHub Gist: {len(users_db)} users, {len(chatroom_messages)} messages")
+            print(f"✅ Chat data restored from GitHub Gist: {len(users_db)} users, {len(chatroom_messages)} messages")
             return True
             
         except Exception as e:
@@ -274,7 +438,8 @@ class DataPersistence:
             print(f"⚠️ Webhook backup error: {e}")
             return False
 
-# Initialize data persistence
+# Initialize storage systems
+pcloud_storage = PcloudStorage()
 data_persistence = DataPersistence()
 
 def backup_data_periodically():
@@ -283,7 +448,7 @@ def backup_data_periodically():
         time.sleep(BACKUP_INTERVAL)
         print(f"🔄 Starting periodic backup…")
         
-        # Try GitHub Gist first
+        # Try GitHub Gist first (for chat data only)
         if data_persistence.backup_to_github_gist():
             print("✅ Primary backup (GitHub Gist) successful")
         else:
@@ -324,7 +489,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎤💬📸 Chatroom Login</title>
+    <title>🎤💬📸 Chatroom Login (Pcloud Edition)</title>
     <style>
         * {
             margin: 0;
@@ -505,6 +670,17 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             margin-bottom: 10px;
         }
         
+        .pcloud-badge {
+            background: linear-gradient(45deg, #4285f4, #34a853);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-top: 10px;
+            display: inline-block;
+        }
+        
         @media (max-width: 500px) {
             .login-container {
                 padding: 30px 20px;
@@ -517,6 +693,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
     <div class="login-container">
         <div class="logo">🎤💬📸</div>
         <h1>Chatroom + Voice + Images</h1>
+        <div class="pcloud-badge">☁️ Powered by Pcloud Storage</div>
         
         <div class="error-message" id="errorMessage"></div>
         <div class="success-message" id="successMessage"></div>
@@ -578,10 +755,11 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
         
         <div class="server-info">
             <h3>🔐 Secure & Feature-Rich</h3>
-            <p>• Your data is backed up automatically</p>
+            <p>• Images stored securely in Pcloud</p>
             <p>• Send images and voice messages</p>
             <p>• Voice + text chat with friends</p>
             <p>• Mobile-friendly interface</p>
+            <p>• High-quality image storage</p>
         </div>
     </div>
 
@@ -804,14 +982,14 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
         # Get username from session
         username = user_sessions.get(session_id, {}).get('username', 'Anonymous')
         
-        """Serve the public chatroom interface with voice room and image support"""
+        """Serve the public chatroom interface with voice room and Pcloud image support"""
         html_content = f"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chatroom + Voice + Images 🎤💬📸</title>
+    <title>Chatroom + Voice + Images 🎤💬📸 (Pcloud Edition)</title>
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         * {{
@@ -842,6 +1020,17 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             font-size: 2em;
             margin-bottom: 10px;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }}
+        
+        .pcloud-badge {{
+            background: linear-gradient(45deg, #4285f4, #34a853);
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            display: inline-block;
         }}
         
         .user-info {{
@@ -1019,6 +1208,16 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             font-style: italic;
         }}
         
+        .pcloud-indicator {{
+            background: linear-gradient(45deg, #4285f4, #34a853);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            margin-left: 5px;
+            display: inline-block;
+        }}
+        
         .input-container {{
             background: rgba(255, 255, 255, 0.95);
             padding: 20px;
@@ -1137,7 +1336,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
         
         .progress-fill {{
             height: 100%;
-            background: #4CAF50;
+            background: linear-gradient(45deg, #4285f4, #34a853);
             transition: width 0.3s ease;
             width: 0%;
         }}
@@ -1193,7 +1392,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             cursor: pointer;
         }}
         
-        /* Voice Room Styles */
+        /* Voice Room Styles - same as before */
         .voice-container {{
             background: rgba(255, 255, 255, 0.95);
             border-radius: 15px;
@@ -1359,6 +1558,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             <button class="logout-btn" onclick="logout()">🚪 Logout</button>
         </div>
         <h1>🎤💬📸 Chatroom + Voice + Images</h1>
+        <div class="pcloud-badge">☁️ Powered by Pcloud Storage</div>
         <div class="tabs">
             <button class="tab-btn active" onclick="switchTab('chat')">💬 Text Chat</button>
             <button class="tab-btn" onclick="switchTab('voice')">🎤 Voice Room</button>
@@ -1370,15 +1570,15 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
         <!-- Text Chat Tab -->
         <div id="chatTab" class="tab-content active">
             <div class="drag-overlay" id="dragOverlay">
-                📸 Drop your image here to share!
+                📸 Drop your image here to upload to Pcloud!
             </div>
             
             <div class="messages-container" id="messagesContainer">
-                <div class="no-messages">Welcome to the chatroom! Send a message or share an image to get started 🚀</div>
+                <div class="no-messages">Welcome to the chatroom! Send a message or share an image to get started 🚀<br><small style="color: #4285f4;">Images are stored securely in Pcloud ☁️</small></div>
             </div>
             
             <div class="upload-progress" id="uploadProgress">
-                <div>📤 Uploading image...</div>
+                <div>📤 Uploading to Pcloud...</div>
                 <div class="progress-bar">
                     <div class="progress-fill" id="progressFill"></div>
                 </div>
@@ -1392,7 +1592,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                     <button class="emoji-btn" onclick="addEmoji('😊')">😊</button>
                     <button class="emoji-btn" onclick="addEmoji('👍')">👍</button>
                     <button class="emoji-btn" onclick="addEmoji('❤️')">❤️</button>
-                    <button class="file-btn" onclick="document.getElementById('imageInput').click()">📸</button>
+                    <button class="file-btn" onclick="document.getElementById('imageInput').click()" title="Upload to Pcloud">📸</button>
                     <input type="file" id="imageInput" class="file-input" accept="image/*" onchange="handleImageSelect(event)">
                     <button id="sendButton" onclick="sendMessage()">Send 📤</button>
                 </div>
@@ -1543,9 +1743,9 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                 return;
             }}
             
-            // Validate file size (5MB limit)
-            if (file.size > 5 * 1024 * 1024) {{
-                alert('Image too large. Please select an image smaller than 5MB.');
+            // Validate file size (10MB limit for Pcloud)
+            if (file.size > 10 * 1024 * 1024) {{
+                alert('Image too large. Please select an image smaller than 10MB.');
                 return;
             }}
             
@@ -1561,16 +1761,16 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             sendButton.disabled = true;
             
             try {{
-                // Compress image if needed
+                // Compress image if needed (but keep higher quality for Pcloud)
                 const compressedFile = await compressImage(file);
                 
                 // Convert to base64
                 const base64Data = await fileToBase64(compressedFile);
                 
                 // Update progress
-                progressFill.style.width = '50%';
+                progressFill.style.width = '30%';
                 
-                // Send to server
+                // Send to server (which will upload to Pcloud)
                 const response = await fetch('/api/chat/upload-image', {{
                     method: 'POST',
                     headers: {{
@@ -1583,20 +1783,22 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                     }})
                 }});
                 
-                progressFill.style.width = '100%';
+                progressFill.style.width = '80%';
                 
                 const result = await response.json();
                 
+                progressFill.style.width = '100%';
+                
                 if (result.success) {{
-                    console.log('Image uploaded successfully');
+                    console.log('Image uploaded successfully to Pcloud');
                     // The image message will appear through the normal message polling
                 }} else {{
-                    alert('Failed to upload image: ' + (result.error || 'Unknown error'));
+                    alert('Failed to upload image to Pcloud: ' + (result.error || 'Unknown error'));
                 }}
                 
             }} catch (error) {{
                 console.error('Upload error:', error);
-                alert('Failed to upload image. Please try again.');
+                alert('Failed to upload image to Pcloud. Please try again.');
             }} finally {{
                 uploadProgress.classList.remove('show');
                 sendButton.disabled = false;
@@ -1614,9 +1816,9 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                 const img = new Image();
                 
                 img.onload = function() {{
-                    // Calculate new dimensions (max 800px width/height)
+                    // Calculate new dimensions (max 1200px for Pcloud - higher quality)
                     let {{ width, height }} = img;
-                    const maxSize = 800;
+                    const maxSize = 1200;
                     
                     if (width > height) {{
                         if (width > maxSize) {{
@@ -1633,12 +1835,12 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                     canvas.width = width;
                     canvas.height = height;
                     
-                    // Draw and compress
+                    // Draw and compress (higher quality for Pcloud)
                     ctx.drawImage(img, 0, 0, width, height);
                     
                     canvas.toBlob((blob) => {{
                         resolve(blob);
-                    }}, 'image/jpeg', 0.8);
+                    }}, 'image/jpeg', 0.9);
                 }};
                 
                 img.src = URL.createObjectURL(file);
@@ -1667,7 +1869,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             modal.classList.remove('show');
         }}
         
-        // Initialize Socket.IO connection
+        // Voice connection functions (same as before)
         function initializeVoiceConnection() {{
             socket = io(SIGNALING_SERVER);
             
@@ -1824,6 +2026,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                     messageContent = `
                         <div class="message-header">
                             <span class="username">${{escapeHtml(message.username)}}</span>
+                            <span class="pcloud-indicator">☁️ Pcloud</span>
                             <span class="timestamp">${{timestamp}}</span>
                         </div>
                         <img class="message-image" src="/api/images/${{message.image_id}}" 
@@ -1875,7 +2078,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             }});
         }}
         
-        // Voice Room functionality
+        // Voice Room functionality (keeping existing functions)
         async function joinVoiceRoom() {{
             try {{
                 localStream = await navigator.mediaDevices.getUserMedia({{
@@ -1936,6 +2139,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             updateParticipantsList();
         }}
         
+        // WebRTC peer connection functions (keeping existing implementations)
         async function createPeerConnection(userId) {{
             const peerConnection = new RTCPeerConnection({{
                 iceServers: [
@@ -2158,11 +2362,11 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             setInterval(loadMessages, 2000);
             loadMessages();
             
-            console.log('🎉 Enhanced Chatroom with Images loaded!');
+            console.log('🎉 Enhanced Chatroom with Pcloud Images loaded!');
             console.log('👤 Logged in as:', currentUser);
             console.log('💬 Text chat ready');
             console.log('🎤 Voice room connected');
-            console.log('📸 Image upload ready');
+            console.log('☁️ Pcloud image storage ready');
         }});
     </script>
 </body>
@@ -2399,7 +2603,7 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json_response({"success": False, "error": str(e)})
     
     def handle_image_upload(self):
-        """Handle image upload"""
+        """Handle image upload to Pcloud"""
         # Check authentication
         session_id = self.get_session_from_cookies()
         if not session_id or not self.is_valid_session(session_id):
@@ -2427,8 +2631,8 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             # Generate unique image ID
             image_id = hashlib.md5(f"{username}_{datetime.now().isoformat()}_{filename}".encode()).hexdigest()
             
-            # Save to GitHub Gist
-            if data_persistence.backup_image_to_gist(image_id, image_data, filename, username):
+            # Upload to Pcloud
+            if pcloud_storage.upload_image(image_id, image_data, filename, username):
                 # Add image message to chat
                 with chatroom_lock:
                     new_id = max([msg['id'] for msg in chatroom_messages], default=0) + 1
@@ -2452,9 +2656,9 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                         for i, msg in enumerate(chatroom_messages):
                             msg['id'] = i + 1
                 
-                self.send_json_response({"success": True, "message": "Image uploaded successfully", "imageId": image_id})
+                self.send_json_response({"success": True, "message": "Image uploaded to Pcloud successfully", "imageId": image_id})
             else:
-                self.send_json_response({"success": False, "error": "Failed to save image"})
+                self.send_json_response({"success": False, "error": "Failed to upload image to Pcloud"})
             
         except json.JSONDecodeError:
             self.send_json_response({"success": False, "error": "Invalid JSON"})
@@ -2462,20 +2666,21 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json_response({"success": False, "error": f"Upload failed: {str(e)}"})
     
     def handle_image_serve(self, path):
-        """Serve images from GitHub Gist"""
+        """Serve images from Pcloud"""
         try:
             image_id = path.split('/')[-1]
             
-            image_data = data_persistence.get_image_from_gist(image_id)
-            if not image_data:
-                self.send_error(404, "Image not found")
+            # Download image from Pcloud
+            image_bytes = pcloud_storage.download_image(image_id)
+            if not image_bytes:
+                self.send_error(404, "Image not found in Pcloud")
                 return
             
-            # Decode base64 image data
-            image_bytes = base64.b64decode(image_data['data'])
+            # Get image info for content type
+            image_info = pcloud_storage.get_image_mapping(image_id)
+            filename = image_info.get('original_filename', 'image.jpg') if image_info else 'image.jpg'
             
             # Determine content type
-            filename = image_data.get('filename', 'image.jpg')
             if filename.lower().endswith('.png'):
                 content_type = 'image/png'
             elif filename.lower().endswith('.gif'):
@@ -2491,8 +2696,8 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(image_bytes)
             
         except Exception as e:
-            print(f"Error serving image: {e}")
-            self.send_error(500, "Error serving image")
+            print(f"Error serving image from Pcloud: {e}")
+            self.send_error(500, "Error serving image from Pcloud")
     
     def handle_chat_messages(self, path):
         """Handle retrieving chat messages (authenticated users only)"""
@@ -2524,10 +2729,13 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
             user_count = len(users_db)
             active_sessions = len([s for s in user_sessions.values() if datetime.now() < s['expires']])
         
+        # Check Pcloud status
+        pcloud_status = "connected" if pcloud_storage.auth_token else "disconnected"
+        
         data = {
             "status": "online",
-            "server": "Enhanced Chatroom + Voice + Images Server",
-            "version": "7.0",
+            "server": "Enhanced Chatroom + Voice + Images Server (Pcloud Edition)",
+            "version": "8.0-pcloud",
             "timestamp": time.time(),
             "total_messages": message_count,
             "total_users": user_count,
@@ -2538,20 +2746,29 @@ class ChatroomHandler(http.server.SimpleHTTPRequestHandler):
                 "persistent_storage", 
                 "github_gist_backup",
                 "text_chat", 
-                "image_sharing",
+                "pcloud_image_storage",
                 "voice_room", 
                 "webrtc_voice", 
                 "push_to_talk", 
                 "render_signaling",
                 "drag_drop_upload",
-                "image_compression"
+                "image_compression",
+                "high_quality_images"
             ],
-            "backup_status": {
+            "storage_status": {
+                "chat_backup": "github_gist",
+                "image_storage": "pcloud",
+                "pcloud_status": pcloud_status,
                 "github_gist_configured": bool(GITHUB_GIST_TOKEN and GITHUB_GIST_ID),
-                "github_images_gist_configured": bool(GITHUB_GIST_TOKEN and GITHUB_IMAGES_GIST_ID),
                 "webhook_configured": bool(EXTERNAL_BACKUP_URL)
             },
-            "uptime": "Running with authentication, voice, and image sharing! 🔐💬🎤📸"
+            "pcloud_info": {
+                "folder_path": PCLOUD_FOLDER_PATH,
+                "authenticated": bool(pcloud_storage.auth_token),
+                "max_file_size": "10MB",
+                "supported_formats": ["JPEG", "PNG", "GIF"]
+            },
+            "uptime": "Running with authentication, voice, and Pcloud image storage! 🔐💬🎤☁️"
         }
         
         self.send_json_response(data)
@@ -2638,11 +2855,22 @@ def cleanup_expired_sessions():
 
 def main():
     # Restore data from backup on startup
-    print("🔄 Restoring data from backups…")
+    print("🔄 Restoring chat data from backups…")
     if data_persistence.restore_from_github_gist():
-        print("✅ Data restored from GitHub Gist backup")
+        print("✅ Chat data restored from GitHub Gist backup")
     else:
-        print("⚠️ No backup found or failed to restore - starting fresh")
+        print("⚠️ No chat backup found or failed to restore - starting fresh")
+    
+    # Test Pcloud connection
+    print("☁️ Testing Pcloud connection...")
+    if pcloud_storage.auth_token:
+        print("✅ Pcloud authentication successful")
+        if pcloud_storage.create_folder_if_not_exists():
+            print(f"✅ Pcloud folder ready: {PCLOUD_FOLDER_PATH}")
+        else:
+            print("⚠️ Failed to create/verify Pcloud folder")
+    else:
+        print("❌ Pcloud authentication failed - image uploads will not work")
     
     # Start background tasks
     backup_thread = threading.Thread(target=backup_data_periodically, daemon=True)
@@ -2654,10 +2882,11 @@ def main():
     try:
         with socketserver.TCPServer(("0.0.0.0", PORT), ChatroomHandler) as httpd:
             print("🚀" * 60)
-            print(f"🔐💬🎤📸 ENHANCED CHATROOM WITH IMAGE SUPPORT!")
+            print(f"☁️💬🎤📸 ENHANCED CHATROOM WITH PCLOUD STORAGE!")
             print("🚀" * 60)
             print(f"🌐 Server URL: http://localhost:{PORT}")
             print(f"📡 Voice Signaling: https://repo1-ejq1.onrender.com")
+            print(f"☁️ Image Storage: Pcloud ({PCLOUD_FOLDER_PATH})")
             print(f"📂 Directory: {os.getcwd()}")
             print(f"🗄️ Loaded Users: {len(users_db)}")
             print(f"💬 Loaded Messages: {len(chatroom_messages)}")
@@ -2670,39 +2899,44 @@ def main():
             print("   ⚡ Session validation on all requests")
             
             print("\n💾 PERSISTENCE FEATURES:")
-            print("   📦 GitHub Gist backup (primary)")
-            print("   📸 Separate GitHub Gist for images")
+            print("   📦 GitHub Gist backup (chat data only)")
+            print("   ☁️ Pcloud storage (images only)")
             print("   🔄 Auto-backup every 5 minutes")
             print("   📤 Webhook backup (secondary)")
             print("   🔧 Data restoration on server restart")
             print("   🧹 Automatic session cleanup")
             
-            print("\n📸 IMAGE FEATURES:")
-            print("   🖼️ Drag & drop image upload")
-            print("   📱 Mobile-friendly file picker")
-            print("   🗜️ Automatic image compression")
-            print("   💾 GitHub Gist storage")
+            print("\n☁️ PCLOUD IMAGE FEATURES:")
+            print("   🖼️ High-quality image storage")
+            print("   📱 Drag & drop + file picker upload")
+            print("   🗜️ Optimized compression (90% quality)")
+            print("   💾 Persistent Pcloud storage")
             print("   🔍 Full-size image preview")
-            print("   📏 5MB file size limit")
+            print("   📏 10MB file size limit")
             print("   🎨 JPEG/PNG/GIF support")
+            print("   🔐 Secure file access")
             
-            print("\n🎯 RENDER.COM SETUP INSTRUCTIONS:")
+            print("\n⚙️ RENDER.COM SETUP INSTRUCTIONS:")
             print("   1. Set environment variables in Render dashboard:")
+            print("      PCLOUD_USERNAME=your_pcloud_email@example.com")
+            print("      PCLOUD_PASSWORD=your_pcloud_password")
+            print("      # OR (recommended for security):")
+            print("      PCLOUD_AUTH_TOKEN=your_pcloud_auth_token")
+            print("      PCLOUD_FOLDER_PATH=/ChatroomImages (optional)")
             print("      GITHUB_GIST_TOKEN=your_github_token_here")
-            print("      GITHUB_GIST_ID=your_main_gist_id_here")
-            print("      GITHUB_IMAGES_GIST_ID=your_images_gist_id_here")
+            print("      GITHUB_GIST_ID=your_gist_id_here")
             print("      BACKUP_WEBHOOK_URL=optional_webhook_url")
-            print("   2. Create a GitHub Personal Access Token with 'gist' scope")
-            print("   3. Create TWO private gists on GitHub:")
-            print("      - One for chat data (main)")
-            print("      - One for image storage (images)")
-            print("   4. Copy both gist IDs from their URLs")
-            print("   5. Your data AND images will persist across restarts! 🎉")
+            print("   2. Create a free Pcloud account at pcloud.com")
+            print("   3. Get your auth token from Pcloud API docs")
+            print("   4. Create a GitHub Personal Access Token with 'gist' scope")
+            print("   5. Create a private gist on GitHub for chat backup")
+            print("   6. Your images will be stored in Pcloud! ☁️")
             
             print("\n✨ FEATURES:")
             print("   🔐 Secure user authentication")
             print("   💬 Real-time text chatroom")
-            print("   📸 Image sharing with drag & drop")
+            print("   ☁️ Pcloud image storage")
+            print("   📸 High-quality image sharing")
             print("   🎤 Voice room with WebRTC")
             print("   📱 Mobile-friendly interface")
             print("   😊 Emoji support")
@@ -2712,7 +2946,7 @@ def main():
             print("   📊 Voice activity indicators")
             print("   👥 User session management")
             print("   🖼️ Image modal preview")
-            print("   🗜️ Automatic image optimization")
+            print("   🗜️ Smart image optimization")
             
             print("\n🌐 API ENDPOINTS:")
             print("   🏠 GET / (Login/Register page)")
@@ -2722,29 +2956,29 @@ def main():
             print("   🚪 POST /api/auth/logout (Logout)")
             print("   ✅ GET /api/auth/check (Check auth)")
             print("   📤 POST /api/chat/send (Send message)")
-            print("   📸 POST /api/chat/upload-image (Upload image)")
+            print("   ☁️ POST /api/chat/upload-image (Upload to Pcloud)")
             print("   📥 GET /api/chat/messages (Get messages)")
-            print("   🖼️ GET /api/images/{id} (Serve image)")
+            print("   🖼️ GET /api/images/{id} (Serve from Pcloud)")
             print("   📊 GET /api/status (Server status)")
             
-            backup_status = "✅ Configured" if GITHUB_GIST_TOKEN and GITHUB_GIST_ID else "❌ Not configured"
-            images_status = "✅ Configured" if GITHUB_GIST_TOKEN and GITHUB_IMAGES_GIST_ID else "❌ Not configured"
+            pcloud_status = "✅ Connected" if pcloud_storage.auth_token else "❌ Not connected"
+            chat_backup_status = "✅ Configured" if GITHUB_GIST_TOKEN and GITHUB_GIST_ID else "❌ Not configured"
             webhook_status = "✅ Configured" if EXTERNAL_BACKUP_URL else "⚠️ Optional"
             
-            print(f"\n💾 BACKUP STATUS:")
-            print(f"   Main Gist: {backup_status}")
-            print(f"   Images Gist: {images_status}")
+            print(f"\n💾 STORAGE STATUS:")
+            print(f"   Pcloud Images: {pcloud_status}")
+            print(f"   Chat Backup: {chat_backup_status}")
             print(f"   Webhook URL: {webhook_status}")
             
+            if not pcloud_storage.auth_token:
+                print("\n⚠️  WARNING: Pcloud not configured!")
+                print("   Image uploads will fail.")
+                print("   Please set PCLOUD_USERNAME + PCLOUD_PASSWORD or PCLOUD_AUTH_TOKEN.")
+            
             if not GITHUB_GIST_TOKEN or not GITHUB_GIST_ID:
-                print("\n⚠️  WARNING: No main backup configured!")
+                print("\n⚠️  WARNING: No chat backup configured!")
                 print("   Your chat data will be lost when Render restarts the service.")
                 print("   Please set GITHUB_GIST_TOKEN and GITHUB_GIST_ID environment variables.")
-            
-            if not GITHUB_IMAGES_GIST_ID:
-                print("\n⚠️  WARNING: No image backup configured!")
-                print("   Images will not be stored persistently.")
-                print("   Please set GITHUB_IMAGES_GIST_ID environment variable.")
             
             print("\n🛑 Press Ctrl+C to stop the server")
             print("=" * 60)
@@ -2754,7 +2988,7 @@ def main():
         print("\n🛑 Server stopped by user")
         print("💾 Performing final backup...")
         data_persistence.backup_to_github_gist()
-        print("👋 Thanks for using the enhanced chatroom!")
+        print("👋 Thanks for using the enhanced chatroom with Pcloud!")
     except Exception as e:
         print(f"❌ Server error: {e}")
 
